@@ -1,0 +1,4 @@
+.venv
+radar.db
+__pycache__
+.git
