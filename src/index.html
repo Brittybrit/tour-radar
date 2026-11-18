@@ -202,8 +202,34 @@ async function api(path, body) {
   if (r.status === 401) { location.reload(); return new Promise(() => {}); }
   return r.json();
 }
-let scanning = false, progress = '', scanError = '';
-async function load() { state = await api('/api/state'); render(); if (state.scan.running && !scanning && !scanError) runScan(); }
+let scanning = false, progress = '', scanError = '', booksNote = '', booksRunning = false;
+async function load() {
+  state = await api('/api/state'); render();
+  if (state.scan.running && !scanning && !scanError) runScan();
+  if (!state.books_at || Date.now() - new Date(state.books_at) > 12 * 36e5) booksPass();
+}
+// Bookstore listings come from Apple, which only answers browsers, so this page looks them up and hands them to the server.
+// It runs quietly in the background, one creator every few seconds, whenever the listings are more than 12 hours old.
+async function booksPass() {
+  if (booksRunning) return;
+  booksRunning = true;
+  const list = state.creators.map(c => [c.id, c.name]);
+  let found = 0, failed = 0;
+  for (let i = 0; i < list.length; i++) {
+    booksNote = `checking book listings ${i + 1}/${list.length}`; if (!scanning) render();
+    try {
+      const r = await fetch('https://itunes.apple.com/search?term=' + encodeURIComponent(list[i][1]) + '&entity=ebook&attribute=authorTerm&limit=25&country=US');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      const results = (data.results || []).map(b => ({artistName: b.artistName, trackName: b.trackName, releaseDate: b.releaseDate, trackViewUrl: b.trackViewUrl, genres: b.genres}));
+      found += (await api('/api/books', {creator_id: list[i][0], results})).new || 0;
+    } catch (e) { failed++; if (failed > 5) break; }
+    await new Promise(r => setTimeout(r, 3500)); // Apple allows about 20 lookups a minute
+  }
+  if (failed <= 5) await api('/api/books', {done: true});
+  booksNote = ''; booksRunning = false;
+  state = await api('/api/state'); render();
+}
 // A scan is many small steps; the page asks for them one at a time. If the page closes, the server finishes on its own schedule.
 async function runScan() {
   if (scanning) return;
@@ -238,7 +264,7 @@ function render() {
   $('#meta').textContent = scanning ? progress
     : scanError ? 'Scan paused: ' + scanError + ' — press Scan now to continue.'
     : sc.running ? 'A scan is finishing in the background.'
-    : ls ? `${state.creators.length} creators tracked · last scan ${ago(ls.finished)} · ${ls.new} new signal${ls.new === 1 ? '' : 's'}${ls.errors && ls.errors.length ? ' · ' + ls.errors.length + ' source error(s)' : ''}${ls.ai ? ' · AI check ' + ls.ai : ''}`
+    : ls ? `${state.creators.length} creators tracked · last scan ${ago(ls.finished)} · ${ls.new} new signal${ls.new === 1 ? '' : 's'}${ls.errors && ls.errors.length ? ' · ' + ls.errors.length + ' source error(s)' : ''}${ls.ai ? ' · AI check ' + ls.ai : ''}${booksNote ? ' · ' + booksNote : ''}`
     : 'No scan yet — press Scan now.';
   $('#meta').title = ls && ls.errors ? ls.errors.join('\n') : '';
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
@@ -379,7 +405,7 @@ document.addEventListener('click', async e => {
   else if (t.id === 'saveNotes') { await api('/api/creators/notes', {id:openId, notes:$('#notes').value}); t.textContent = 'Saved'; state.creators.find(c => c.id === openId).notes = $('#notes').value; }
   else if (t.id === 'saveSources') { await api('/api/creators/sources', {id:openId, website:$('#srcSite').value, yt_handle:$('#srcYt').value, instagram:$('#srcIg').value, threads:$('#srcTh').value}); scanError = ''; await load(); }
   else if (t.id === 'removeCreator') { if (confirm('Stop tracking and delete their signals?')) { await api('/api/creators/delete', {id:openId}); closeDrawer(); load(); } }
-  else if (t.id === 'scanBtn') { scanError = ''; await api('/api/scan', {}); runScan(); }
+  else if (t.id === 'scanBtn') { scanError = ''; await api('/api/scan', {}); runScan(); booksPass(); }
   else if (t.id === 'addBtn') { $('#aName').value = $('#aAlias').value = $('#aYt').value = $('#aSite').value = ''; $('#addDlg').showModal(); }
   else if (t.id === 'lookBtn') { $('#lSite').value = state.settings.site || ''; $('#lMsg').textContent = ''; renderLook(); $('#lookDlg').showModal(); }
   else if (t.id === 'lClose') $('#lookDlg').close();

@@ -291,6 +291,29 @@ function socialHandle(u) {
 const cleanHandle = (v) => String(v || "").trim().replace(/^https?:\/\/(www\.)?(instagram\.com|threads\.(net|com))\//i, "").replace(/^@/, "").split(/[/?#]/)[0].slice(0, 40);
 const plain = (htmlText) => decodeEntities(htmlText.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
 
+// Bookstore listings: Apple's catalog carries pre-orders with their on-sale dates, from every publisher.
+// Apple refuses requests from Cloudflare, so the dashboard page fetches the listings and hands them here.
+function bookSignals(cr, results) {
+  const sigs = [], me = cr.name.toLowerCase(), now = Date.now(), seenTitles = new Set();
+  for (const b of (Array.isArray(results) ? results : []).slice(0, 50)) {
+    const authors = String(b?.artistName || "").toLowerCase().split(/\s*(?:,|&| and )\s*/);
+    const when = new Date(b?.releaseDate).getTime();
+    const name = String(b?.trackName || "").slice(0, 200), key = name.toLowerCase();
+    const link = String(b?.trackViewUrl || "").split("?")[0];
+    if (!authors.includes(me) || isNaN(when) || !name || !link.startsWith("https://books.apple.com/") || seenTitles.has(key)) continue;
+    const future = when > now;
+    if (!future && now - when > 120 * 864e5) continue; // older than four months: the promo cycle is over
+    seenTitles.add(key);
+    const day = new Date(when).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+    sigs.push({ title: future ? `Book on sale ${day}: “${name}” — pre-order listed` : `Book released ${day}: “${name}”`,
+      url: link.slice(0, 600), outlet: "Apple Books listing", published_at: future ? nowIso() : new Date(when).toISOString(),
+      source: "books", kind: future ? "dated" : "release", stage: 3, weight: future ? 10 : 7, matched: new Date(when).toISOString().slice(0, 10),
+      // Other authors share common names; a politics, memoir or nonfiction shelf is what makes it likely to be this creator.
+      confidence: /politic|current events|biograph|memoir|history|social science|nonfiction|business|humor|law|philosophy/i.test((Array.isArray(b.genres) ? b.genres : []).join(" ")) ? "high" : "low" });
+  }
+  return sigs;
+}
+
 // The creator's own website: ticket and bookseller links, announcement-style headings, their feed, and how to reach them.
 async function siteTask(cr) {
   const sigs = new Map(), errs = [], contacts = new Map(), socials = {};
@@ -474,29 +497,7 @@ async function creatorTask(cr, skipNews) {
     }
   };
 
-  // Bookstore listing: Apple's catalog carries pre-orders with their on-sale dates, from every publisher.
-  const books = async () => {
-    const data = JSON.parse(await fetchCapped(`https://itunes.apple.com/search?term=${encodeURIComponent(cr.name)}&entity=ebook&attribute=authorTerm&limit=25&country=US`, 400000));
-    const me = cr.name.toLowerCase(), now = Date.now(), seenTitles = new Set();
-    for (const b of data.results || []) {
-      const authors = String(b.artistName || "").toLowerCase().split(/\s*(?:,|&| and )\s*/);
-      const when = new Date(b.releaseDate).getTime();
-      const key = String(b.trackName || "").toLowerCase();
-      if (!authors.includes(me) || isNaN(when) || !b.trackViewUrl || seenTitles.has(key)) continue;
-      const future = when > now;
-      if (!future && now - when > 120 * 864e5) continue; // older than four months: the promo cycle is over
-      seenTitles.add(key);
-      const day = new Date(when).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
-      sigs.push({ title: future ? `Book on sale ${day}: “${b.trackName}” — pre-order listed` : `Book released ${day}: “${b.trackName}”`,
-        url: String(b.trackViewUrl).split("?")[0], outlet: "Apple Books listing", published_at: future ? nowIso() : new Date(when).toISOString(),
-        source: "books", kind: future ? "dated" : "release", stage: 3, weight: future ? 10 : 7, matched: new Date(when).toISOString().slice(0, 10),
-        // Other authors share common names; a politics, memoir or nonfiction shelf is what makes it likely to be this creator.
-        confidence: /politic|current events|biograph|memoir|history|social science|nonfiction|business|humor|law|philosophy/i.test((b.genres || []).join(" ")) ? "high" : "low" });
-    }
-  };
-
   const jobs = [
-    ["books", books()],
     ...(skipNews ? [] : [
       ["news", news(`(${who}) ("book deal" OR "new book" OR memoir OR forthcoming OR "pre-order" OR "to publish" OR documentary OR "signs with" OR announces)`)],
       ["news", news(`(${who}) ("book tour" OR "live tour" OR "tour dates" OR tickets OR "live show" OR "book signing" OR "in conversation" OR "to speak" OR "on tour")`)],
@@ -871,7 +872,7 @@ async function buildState(env) {
   const pending = cRes.results.filter((c) => c.pending).length + qRes.results[0].sites + qRes.results[0].videos;
   const settings = Object.fromEntries(SETTING_KEYS.filter((k) => S[k] != null).map((k) => [k, S[k]]));
   return {
-    creators, discovery: (by.get(0) || []).slice(0, 60), settings, stages: STAGES,
+    creators, discovery: (by.get(0) || []).slice(0, 60), settings, stages: STAGES, books_at: S.books_at || "",
     last_scan: S.scan_finished ? { finished: S.scan_finished, new: +(S.scan_new || 0), errors: parseList(S.scan_errors), ai: S.ai_status || "" } : null,
     scan: { running: pending > 0 || (!!S.scan_started && (S.scan_finished || "") < S.scan_started), left: pending, total: creators.length },
   };
@@ -935,6 +936,14 @@ async function handle(request, env) {
     case "/api/creators/notes":
       await db.prepare("UPDATE creators SET notes=? WHERE id=?").bind(String(b.notes || "").slice(0, 5000), +b.id || -1).run();
       return json({ ok: true });
+    case "/api/books": { // the dashboard delivers one creator's bookstore listings, or says the pass is finished
+      if (b.done) { await setting(env, "books_at", nowIso()).run(); return json({ ok: true }); }
+      const cr = await db.prepare("SELECT id, name FROM creators WHERE id=?").bind(+b.creator_id || -1).first();
+      if (!cr) return json({ ok: true, new: 0 });
+      const t = nowIso(), inserts = bookSignals(cr, b.results).map((sig) => insertSignal(env, cr.id, sig, t));
+      const res = inserts.length ? await db.batch(inserts) : [];
+      return json({ ok: true, new: res.reduce((n, r) => n + (r.meta?.changes || 0), 0) });
+    }
     case "/api/signals":
       if (!["new", "confirmed", "dismissed"].includes(b.status)) return json({ error: "bad status" }, 400);
       await db.prepare("UPDATE signals SET status=? WHERE id=?").bind(b.status, +b.id || -1).run();
