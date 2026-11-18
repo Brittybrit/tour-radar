@@ -168,7 +168,7 @@ async function init(env) {
   const res = await env.DB.batch([
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS creators(id INTEGER PRIMARY KEY, name TEXT UNIQUE, aliases TEXT DEFAULT '[]',
       yt_handle TEXT DEFAULT '', yt_channel_id TEXT DEFAULT '', notes TEXT DEFAULT '', added_at TEXT, checked_at TEXT,
-      website TEXT DEFAULT '', contacts TEXT DEFAULT '[]', site_checked_at TEXT)`),
+      website TEXT DEFAULT '', contacts TEXT DEFAULT '[]', site_checked_at TEXT, instagram TEXT DEFAULT '', threads TEXT DEFAULT '', subs TEXT DEFAULT '', subs_at TEXT)`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS videos(video_id TEXT PRIMARY KEY, creator_id INTEGER NOT NULL, title TEXT, published_at TEXT, checked_at TEXT, note TEXT)`),
     env.DB.prepare("PRAGMA table_info(creators)"),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS signals(id INTEGER PRIMARY KEY, creator_id INTEGER NOT NULL, source TEXT, kind TEXT, stage INTEGER,
@@ -185,6 +185,12 @@ async function init(env) {
       env.DB.prepare("ALTER TABLE creators ADD COLUMN site_checked_at TEXT"),
       ...Object.entries(SEED_SITES).map(([name, site]) => env.DB.prepare("UPDATE creators SET website=? WHERE name=? AND (website IS NULL OR website='')").bind(site, name)),
     ]);
+  }
+  if (!res[2].results.some((c) => c.name === "instagram")) {
+    await env.DB.batch([env.DB.prepare("ALTER TABLE creators ADD COLUMN instagram TEXT DEFAULT ''"), env.DB.prepare("ALTER TABLE creators ADD COLUMN threads TEXT DEFAULT ''")]);
+  }
+  if (!res[2].results.some((c) => c.name === "subs")) {
+    await env.DB.batch([env.DB.prepare("ALTER TABLE creators ADD COLUMN subs TEXT DEFAULT ''"), env.DB.prepare("ALTER TABLE creators ADD COLUMN subs_at TEXT")]);
   }
   if (!res[5].results.length) {
     const t = nowIso();
@@ -274,11 +280,20 @@ function classifyLink(u, context) {
   }
   return null;
 }
+// Pull an Instagram or Threads handle out of a link, ignoring post, reel and share links.
+const safeUrl = (raw) => { try { return new URL(raw); } catch { return new URL("https://invalid.invalid/"); } };
+function socialHandle(u) {
+  const host = u.hostname.toLowerCase().replace(/^www\./, ""), part = u.pathname.split("/").filter(Boolean)[0] || "";
+  if (host === "instagram.com" && /^[\w.]{2,30}$/.test(part) && !/^(p|reel|reels|explore|accounts|stories|tv|share)$/i.test(part)) return ["instagram", part];
+  if ((host === "threads.net" || host === "threads.com") && /^@[\w.]{2,30}$/.test(part)) return ["threads", part.slice(1)];
+  return null;
+}
+const cleanHandle = (v) => String(v || "").trim().replace(/^https?:\/\/(www\.)?(instagram\.com|threads\.(net|com))\//i, "").replace(/^@/, "").split(/[/?#]/)[0].slice(0, 40);
 const plain = (htmlText) => decodeEntities(htmlText.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
 
 // The creator's own website: ticket and bookseller links, announcement-style headings, their feed, and how to reach them.
 async function siteTask(cr) {
-  const sigs = new Map(), errs = [], contacts = new Map();
+  const sigs = new Map(), errs = [], contacts = new Map(), socials = {};
   let base;
   try { base = new URL(/^https?:\/\//i.test(cr.website) ? cr.website : "https://" + cr.website); } catch { return { sigs: [], errs: [`website: ${cr.name}: not a valid address`], contacts: [] }; }
   const bare = (h) => h.replace(/^www\./, "");
@@ -298,6 +313,8 @@ async function siteTask(cr) {
       try { u = new URL(raw, pageUrl); } catch { continue; }
       if (!/^https?:$/.test(u.protocol)) continue;
       if (bare(u.hostname) !== bare(base.hostname)) {
+        const soc = socialHandle(u);
+        if (soc && !socials[soc[0]]) socials[soc[0]] = soc[1];
         const c = classifyLink(u, text + " " + plain(page.slice(Math.max(0, m.index - 200), m.index)));
         if (c) add({ ...c, title: `${c.label} on their website: ${text || bare(u.hostname)}`, url: u.href.slice(0, 600), matched: bare(u.hostname), confidence: "high" });
         continue;
@@ -340,7 +357,7 @@ async function siteTask(cr) {
     })(),
   ].filter(Boolean));
   more.forEach((r) => { if (r.status === "rejected") errs.push(`website: ${cr.name}: ${r.reason?.message || r.reason}`); });
-  return { sigs: [...sigs.values()], errs, contacts: [...contacts.values()] };
+  return { sigs: [...sigs.values()], errs, contacts: [...contacts.values()], socials };
 }
 
 // One video: fetch its English captions and keep the passages where the creator sounds like they are promoting something.
@@ -384,8 +401,8 @@ async function creatorTask(cr, skipNews) {
   const names = [cr.name, ...aliases];
   const lowNames = names.map((n) => n.toLowerCase());
   const who = names.slice(0, 3).map((n) => `"${n}"`).join(" OR ");
-  const sigs = [], errs = [], videos = [];
-  let chan = cr.yt_channel_id || "";
+  const sigs = [], errs = [], videos = [], seenSocial = {};
+  let chan = cr.yt_channel_id || "", subs = cr.subs || "", subsAt = cr.subs_at || null;
 
   const news = async (q) => {
     for (const it of await gnews(q)) {
@@ -414,11 +431,16 @@ async function creatorTask(cr, skipNews) {
   // The creator's own channel: they announce there first.
   const youtube = async () => {
     if (!cr.yt_handle) return;
-    if (!chan) {
-      const page = await fetchText("https://www.youtube.com/@" + encodeURIComponent(cr.yt_handle));
+    // The channel page gives the channel id (needed once) and the subscriber count (refreshed weekly; the page is large).
+    if (!chan || !cr.subs_at || Date.now() - new Date(cr.subs_at).getTime() > 7 * 864e5) {
+      const page = await fetchCapped("https://www.youtube.com/@" + encodeURIComponent(cr.yt_handle), 1600000);
       const m = page.match(/channel_id=(UC[\w-]{22})/) || page.match(/"(?:channelId|externalId)":"(UC[\w-]{22})"/);
-      if (!m) throw new Error(`could not resolve @${cr.yt_handle}`);
-      chan = m[1];
+      if (!chan && !m) throw new Error(`could not resolve @${cr.yt_handle}`);
+      if (!chan) chan = m[1];
+      // The page also lists other channels' counts; only the one printed beside this creator's own handle is trusted.
+      const own = page.match(new RegExp("@" + cr.yt_handle.replace(/[^\w.-]/g, "") + '[^"]{0,24}?([\\d.,]+[KMB]?) subscribers', "i"));
+      subs = own ? own[1] : "";
+      subsAt = nowIso();
     }
     const xml = await fetchText("https://www.youtube.com/feeds/videos.xml?channel_id=" + chan);
     const re = /<entry>([\s\S]*?)<\/entry>/g;
@@ -438,6 +460,7 @@ async function creatorTask(cr, skipNews) {
       const desc = decodeEntities((e[1].match(/<media:description>([\s\S]*?)<\/media:description>/) || [])[1] || "");
       for (const line of desc.split("\n")) {
         for (const lm of line.matchAll(/https?:\/\/[^\s<>"')]+/g)) {
+          if (socialHandle(safeUrl(lm[0]))) { const k = socialHandle(safeUrl(lm[0])).join(":"); seenSocial[k] = (seenSocial[k] || 0) + 1; }
           if (linked.has(lm[0]) || linked.size > 40) continue;
           linked.add(lm[0]);
           let u;
@@ -451,7 +474,29 @@ async function creatorTask(cr, skipNews) {
     }
   };
 
+  // Bookstore listing: Apple's catalog carries pre-orders with their on-sale dates, from every publisher.
+  const books = async () => {
+    const data = JSON.parse(await fetchCapped(`https://itunes.apple.com/search?term=${encodeURIComponent(cr.name)}&entity=ebook&attribute=authorTerm&limit=25&country=US`, 400000));
+    const me = cr.name.toLowerCase(), now = Date.now(), seenTitles = new Set();
+    for (const b of data.results || []) {
+      const authors = String(b.artistName || "").toLowerCase().split(/\s*(?:,|&| and )\s*/);
+      const when = new Date(b.releaseDate).getTime();
+      const key = String(b.trackName || "").toLowerCase();
+      if (!authors.includes(me) || isNaN(when) || !b.trackViewUrl || seenTitles.has(key)) continue;
+      const future = when > now;
+      if (!future && now - when > 120 * 864e5) continue; // older than four months: the promo cycle is over
+      seenTitles.add(key);
+      const day = new Date(when).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+      sigs.push({ title: future ? `Book on sale ${day}: “${b.trackName}” — pre-order listed` : `Book released ${day}: “${b.trackName}”`,
+        url: String(b.trackViewUrl).split("?")[0], outlet: "Apple Books listing", published_at: future ? nowIso() : new Date(when).toISOString(),
+        source: "books", kind: future ? "dated" : "release", stage: 3, weight: future ? 10 : 7, matched: new Date(when).toISOString().slice(0, 10),
+        // Other authors share common names; a politics, memoir or nonfiction shelf is what makes it likely to be this creator.
+        confidence: /politic|current events|biograph|memoir|history|social science|nonfiction|business|humor|law|philosophy/i.test((b.genres || []).join(" ")) ? "high" : "low" });
+    }
+  };
+
   const jobs = [
+    ["books", books()],
     ...(skipNews ? [] : [
       ["news", news(`(${who}) ("book deal" OR "new book" OR memoir OR forthcoming OR "pre-order" OR "to publish" OR documentary OR "signs with" OR announces)`)],
       ["news", news(`(${who}) ("book tour" OR "live tour" OR "tour dates" OR tickets OR "live show" OR "book signing" OR "in conversation" OR "to speak" OR "on tour")`)],
@@ -467,7 +512,10 @@ async function creatorTask(cr, skipNews) {
     if (jobs[i][0] === "news" && BLOCKED.test(msg)) newsBlocked = true; // reported once per scan, not once per creator
     else errs.push(`${jobs[i][0]}: ${cr.name}: ${msg}`);
   });
-  return { sigs, errs, chan, videos, newsBlocked };
+  // A handle repeated across several video descriptions is the channel's own, not a guest's.
+  const socials = {};
+  for (const [k, n] of Object.entries(seenSocial).sort((a, b) => b[1] - a[1])) { const [net, handle] = k.split(":"); if (n >= 2 && !socials[net]) socials[net] = handle; }
+  return { sigs, errs, chan, videos, newsBlocked, socials, subs, subsAt };
 }
 
 // Trade headlines and press-release wires. A watchlist name in the headline makes it that creator's signal; otherwise it is a discovery lead.
@@ -592,7 +640,7 @@ async function extractTheme(raw) {
 async function aiBatch(env, rows) {
   const model = env.RADAR_MODEL || "claude-haiku-5-5";
   const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
-  const KIND = { news: "news headline", wire: "press-release headline", youtube: "their own video title or description", transcript: "words spoken in their video (automatic captions)", website: "their own website", catalog: "book catalog listing" };
+  const KIND = { news: "news headline", wire: "press-release headline", youtube: "their own video title or description", transcript: "words spoken in their video (automatic captions)", website: "their own website", catalog: "book catalog listing", books: "bookstore listing under their name as author" };
   const items = rows.map((r) => ({ id: r.id, creator: r.name, also_known_as: parseList(r.aliases), kind: KIND[r.source] || "news headline", headline: r.title, outlet: r.outlet, published: (r.published_at || "").slice(0, 10) }));
   const params = {
     model, max_tokens: 16000, system: AI_SYSTEM,
@@ -667,7 +715,8 @@ async function step(env) {
     const inserts = out.sigs.filter((s) => s.url).map((s) => insertSignal(env, cr.id, s, t));
     const res = await env.DB.batch([...inserts,
       ...out.videos.map((v) => env.DB.prepare("INSERT OR IGNORE INTO videos(video_id,creator_id,title,published_at) VALUES(?,?,?,?)").bind(v.id, cr.id, v.title.slice(0, 200), v.published)),
-      env.DB.prepare("UPDATE creators SET checked_at=?, yt_channel_id=? WHERE id=?").bind(t, out.chan, cr.id)]);
+      env.DB.prepare(`UPDATE creators SET checked_at=?1, yt_channel_id=?2, instagram=CASE WHEN COALESCE(instagram,'')='' THEN ?3 ELSE instagram END,
+        threads=CASE WHEN COALESCE(threads,'')='' THEN ?4 ELSE threads END, subs=?6, subs_at=?7 WHERE id=?5`).bind(t, out.chan, out.socials.instagram || "", out.socials.threads || "", cr.id, out.subs, out.subsAt)]);
     const extra = out.newsBlocked && !googleBlocked ? [setting(env, "news_blocked", S.scan_started)] : [];
     await env.DB.batch([...bookkeeping(count(res, inserts.length), out.newsBlocked && !googleBlocked ? [GOOGLE_NOTE, ...out.errs] : out.errs), ...extra]);
     return { done: false, message: `Checked ${cr.name}`, left: left - 1 };
@@ -677,8 +726,10 @@ async function step(env) {
   if (site) {
     const out = await siteTask(site);
     const inserts = out.sigs.map((s) => insertSignal(env, site.id, s, t));
-    const res = await env.DB.batch([...inserts, env.DB.prepare("UPDATE creators SET site_checked_at=?, contacts=? WHERE id=?")
-      .bind(t, out.contacts.length ? JSON.stringify(out.contacts) : site.contacts || "[]", site.id)]);
+    // Social handles found on the site fill in blanks only; anything typed in by hand is kept.
+    const res = await env.DB.batch([...inserts, env.DB.prepare(`UPDATE creators SET site_checked_at=?1, contacts=?2,
+      instagram=CASE WHEN COALESCE(instagram,'')='' THEN ?3 ELSE instagram END, threads=CASE WHEN COALESCE(threads,'')='' THEN ?4 ELSE threads END WHERE id=?5`)
+      .bind(t, out.contacts.length ? JSON.stringify(out.contacts) : site.contacts || "[]", out.socials?.instagram || "", out.socials?.threads || "", site.id)]);
     await env.DB.batch(bookkeeping(count(res, inserts.length), out.errs));
     return { done: false, message: `Read ${site.name}'s website`, left: left - 1 };
   }
@@ -777,8 +828,12 @@ function windowFor(stage, sig) {
     if (d + 540 * 864e5 < Date.now()) return "Release likely imminent";
     return `Tour likely ${fmt(d + 270 * 864e5)} – ${fmt(d + 540 * 864e5)}`;
   }
+  if (stage === 3 && sig.source === "books" && sig.kind === "dated") {
+    const d = new Date(sig.matched + "T12:00:00Z");
+    if (!isNaN(d)) return `Book on sale ${d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })} — pitch now`;
+  }
   if (stage === 3) return "Tour likely within 1–6 months";
-  if (stage === 4) return "Routing is being locked now";
+  if (stage === 4) return "Tour route planning is in progress";
   return "On the road — look for added dates";
 }
 
@@ -809,7 +864,7 @@ async function buildState(env) {
     const stage = counting.reduce((m, s) => Math.max(m, s.stage), 0);
     const lead = counting.filter((s) => s.stage === stage).sort((a, b) => b.weight - a.weight || a.age - b.age)[0] || null;
     const heat = counting.reduce((a, s) => a + s.weight * (s.status === "confirmed" ? 1.5 : 1) * 0.5 ** (s.age / 90), 0);
-    return { id: cr.id, name: cr.name, aliases: parseList(cr.aliases), yt_handle: cr.yt_handle, website: cr.website || "", contacts: parseList(cr.contacts), notes: cr.notes, stage, heat: Math.round(heat * 10) / 10, lead,
+    return { id: cr.id, name: cr.name, aliases: parseList(cr.aliases), yt_handle: cr.yt_handle, website: cr.website || "", instagram: cr.instagram || "", threads: cr.threads || "", subs: cr.subs || "", contacts: parseList(cr.contacts), notes: cr.notes, stage, heat: Math.round(heat * 10) / 10, lead,
       window: lead ? windowFor(stage, lead) : "", review: sigs.filter((s) => s.active && !s.counts && !s.rejected).length,
       new: sigs.filter((s) => s.is_new).length, local: sigs.some((s) => s.local), signals: sigs };
   }).sort((a, b) => b.heat - a.heat);
@@ -871,8 +926,8 @@ async function handle(request, env) {
       return json({ ok: true });
     }
     case "/api/creators/sources": // change where a creator is watched, and rescan them
-      await db.prepare("UPDATE creators SET website=?1, yt_channel_id=CASE WHEN yt_handle=?2 THEN yt_channel_id ELSE '' END, yt_handle=?2, checked_at=NULL, site_checked_at=NULL WHERE id=?3")
-        .bind(String(b.website || "").trim().slice(0, 200), String(b.yt_handle || "").trim().replace(/^@/, "").slice(0, 80), +b.id || -1).run();
+      await db.prepare("UPDATE creators SET website=?1, yt_channel_id=CASE WHEN yt_handle=?2 THEN yt_channel_id ELSE '' END, yt_handle=?2, instagram=?4, threads=?5, checked_at=NULL, site_checked_at=NULL WHERE id=?3")
+        .bind(String(b.website || "").trim().slice(0, 200), String(b.yt_handle || "").trim().replace(/^@/, "").slice(0, 80), +b.id || -1, cleanHandle(b.instagram), cleanHandle(b.threads)).run();
       return json({ ok: true });
     case "/api/creators/delete":
       await db.batch([db.prepare("DELETE FROM signals WHERE creator_id=?").bind(+b.id || -1), db.prepare("DELETE FROM videos WHERE creator_id=?").bind(+b.id || -1), db.prepare("DELETE FROM creators WHERE id=?").bind(+b.id || -1)]);

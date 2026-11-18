@@ -10,6 +10,7 @@ An early-warning monitor for venues that book political and civic creators. It w
 | YouTube titles and descriptions | Announcement titles, and pre-order or ticket links in the description |
 | The creator's own website | Ticket and bookseller links, announcement headings, their feed, and booking or press contacts |
 | Press-release wires | PR Newswire's dated archive (books back about a year, music and tours about nine months), an archive search for each tracked creator, and the newest releases on every scan; plus PRWeb's daily feed |
+| Bookstore listings | Apple Books listings under the creator's name, including pre-orders with their on-sale dates, from every publisher |
 | Book catalog and trade press | Open Library listings and Publishers Weekly |
 | Google News | Press coverage. Google refuses requests from Cloudflare, so this only runs when the app is run elsewhere, such as on your own computer |
 

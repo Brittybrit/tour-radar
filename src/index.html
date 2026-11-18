@@ -48,6 +48,11 @@ main{padding:16px 20px 60px}
 .tag{font-size:11px;padding:1px 7px;border-radius:99px;background:var(--soft);color:var(--muted);white-space:nowrap}
 .tag.new{background:var(--accent);color:var(--accent-ink)}
 .tag.local{background:var(--ok);color:#fff}
+.socs{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.soc{display:grid;place-items:center;width:28px;height:28px;border-radius:7px;border:1px solid var(--line);color:var(--ink);background:var(--panel)}
+.soc:hover{border-color:var(--accent);color:var(--accent)}
+.soc.guess{opacity:.45}
+.soc svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .empty{font-size:12.5px;color:var(--muted);padding:8px 2px}
 section h3{font-size:14px;margin:26px 0 4px}
 section>p{margin:0 0 10px;color:var(--muted);font-size:13px}
@@ -140,7 +145,7 @@ const COLS = [
   [1,'Whisper','12–24 months out. Agency signings, "working on a book".'],
   [2,'Deal announced','9–18 months out. Get on the publicist\'s list.'],
   [3,'Dated / pre-order','1–6 months out. The pitch window.'],
-  [4,'Tour announced','Routing is being set. Ask for an added stop.'],
+  [4,'Tour announced','Tour route planning is in progress. Ask for an added stop.'],
   [5,'On the road','Appearing now. Gap dates and next leg.'],
 ];
 const PLAY = {
@@ -241,6 +246,25 @@ function render() {
   if (openId) drawer(openId);
 }
 
+// Icon links to a creator's own pages. A known page links straight there; an unknown one is dimmed and opens a search for it.
+const ICONS = {
+  youtube: '<svg viewBox="0 0 24 24"><rect x="2.5" y="5.5" width="19" height="13" rx="4"/><path d="M10 9.2v5.6l4.8-2.8z" fill="currentColor" stroke="none"/></svg>',
+  threads: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.6"/><path d="M15.6 8.6v4.6a2.3 2.3 0 0 0 4.6 0V12a8.2 8.2 0 1 0-3.3 6.6"/></svg>',
+  instagram: '<svg viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="5"/><circle cx="12" cy="12" r="3.8"/><circle cx="17" cy="7" r="1" fill="currentColor" stroke="none"/></svg>',
+  web: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 2.6 3.8 5.6 3.8 9s-1.2 6.4-3.8 9c-2.6-2.6-3.8-5.6-3.8-9S9.400 5.600 12 3z"/></svg>',
+};
+function socials(c) {
+  const find = what => 'https://www.google.com/search?q=' + encodeURIComponent(`"${c.name}" ${what}`);
+  const site = c.website ? (/^https?:\/\//i.test(c.website) ? c.website : 'https://' + c.website) : '';
+  const items = [
+    ['youtube', 'YouTube', c.yt_handle && 'https://www.youtube.com/@' + encodeURIComponent(c.yt_handle), find('YouTube channel')],
+    ['threads', 'Threads', c.threads && 'https://www.threads.com/@' + encodeURIComponent(c.threads), find('Threads')],
+    ['instagram', 'Instagram', c.instagram && 'https://www.instagram.com/' + encodeURIComponent(c.instagram) + '/', find('Instagram')],
+    ['web', 'Website', site, find('official website')],
+  ];
+  return `<div class="socs">${items.map(([k, label, url, search]) => `<a class="soc${url ? '' : ' guess'}" href="${esc(safeUrl(url || search))}" target="_blank" rel="noopener" title="${url ? label : 'Search for their ' + label + ' — not set yet'}" aria-label="${esc(c.name)} on ${label}">${ICONS[k]}</a>`).join('')}${c.subs ? `<span class="tag" style="align-self:center" title="YouTube subscribers">${esc(c.subs)} subscribers</span>` : ''}</div>`;
+}
+
 function card(c) {
   return `<div class="card" style="border-left-color:${COLORS[c.stage]}" data-open="${c.id}">
     <b>${esc(c.name)}</b>
@@ -248,6 +272,7 @@ function card(c) {
     <div class="win" style="color:${COLORS[c.stage]}">${esc(c.window)}</div>
     <div class="tags">${c.new ? `<span class="tag new">${c.new} new</span>` : ''}${c.local ? '<span class="tag local">mentions your city</span>' : ''}
       <span class="tag">${c.signals.filter(s => s.counts).length} signal(s)</span>${c.review ? `<span class="tag">${c.review} to review</span>` : ''}</div>
+    ${socials(c)}
   </div>`;
 }
 
@@ -322,7 +347,7 @@ function drawer(id) {
       ${s.status === 'confirmed' ? ' · confirmed' : s.ai === 'yes' ? ' · AI checked' : s.ai === 'no' ? ' · AI: not theirs' : s.confidence === 'low' ? ' · unverified' : ''}${s.active ? '' : ' · past cycle'}${s.is_new ? ' · <b>new</b>' : ''}</div>${s.ai_reason ? `<div class="sub">${esc(s.ai_reason)}</div>` : ''}</div>
     <div class="acts">${s.status !== 'confirmed' && (s.confidence === 'low' || s.ai === 'no') ? `<button data-sig="${s.id}" data-status="confirmed">Confirm</button>` : ''}<button data-sig="${s.id}" data-status="dismissed">Dismiss</button></div></div>`;
   $('#drawer').innerHTML = `<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
-      <div><h2>${esc(c.name)}</h2>${c.stage ? `<span class="stagepill" style="background:${COLORS[c.stage]}">${esc(state.stages[c.stage])}</span> <span class="note">${esc(c.window)}</span>` : '<span class="note">No live promo signal</span>'}</div>
+      <div><h2>${esc(c.name)}</h2>${socials(c)}<div style="height:8px"></div>${c.stage ? `<span class="stagepill" style="background:${COLORS[c.stage]}">${esc(state.stages[c.stage])}</span> <span class="note">${esc(c.window)}</span>` : '<span class="note">No live promo signal</span>'}</div>
       <button id="closeDrawer">Close</button></div>
     <h4>What to do now</h4><ol class="play">${PLAY[c.stage].map(p => `<li>${esc(p)}</li>`).join('')}</ol>
     <h4>Find the right contact</h4>${(c.contacts || []).length ? `<div class="note" style="margin-bottom:6px">Found on their website:</div>${c.contacts.map(k => `<div class="row" style="padding:7px 10px"><div class="t"><a href="${esc(/^(https?:|mailto:)/i.test(k.href) ? k.href : '#')}" target="_blank" rel="noopener">${esc(k.value)}</a><div class="sub">${esc(k.label)}</div></div></div>`).join('')}` : ''}
@@ -333,6 +358,8 @@ function drawer(id) {
     <h4>Where to watch them</h4>
     <label>Their own website</label><input id="srcSite" value="${esc(c.website || '')}" placeholder="example.com">
     <label>YouTube handle</label><input id="srcYt" value="${esc(c.yt_handle || '')}" placeholder="@handle">
+    <label>Instagram handle</label><input id="srcIg" value="${esc(c.instagram || '')}" placeholder="@handle">
+    <label>Threads handle</label><input id="srcTh" value="${esc(c.threads || '')}" placeholder="@handle">
     <div style="margin-top:8px"><button id="saveSources">Save and rescan them</button></div>
     <h4>Notes — contacts, replies, follow-up dates</h4><textarea id="notes" style="min-height:90px">${esc(c.notes)}</textarea>
     <div style="margin-top:8px;display:flex;justify-content:space-between"><button id="saveNotes">Save notes</button><button id="removeCreator">Stop tracking</button></div>`;
@@ -342,6 +369,7 @@ function closeDrawer() { openId = null; $('#drawer').classList.remove('open'); }
 
 document.addEventListener('click', async e => {
   const t = e.target, o = t.closest('[data-open]');
+  if (t.closest('a.soc')) return; // icon links open their page, not the creator panel
   if (t.dataset.tab) { tab = t.dataset.tab; render(); }
   else if (t.dataset.sig) { await api('/api/signals', {id:+t.dataset.sig, status:t.dataset.status}); load(); }
   else if (t.dataset.track !== undefined) { $('#aName').value = t.dataset.track; $('#aAlias').value = ''; $('#aYt').value = ''; $('#aSite').value = ''; $('#addDlg').showModal(); }
@@ -349,7 +377,7 @@ document.addEventListener('click', async e => {
   else if (t.id === 'closeDrawer') closeDrawer();
   else if (t.id === 'copyPitch') { await navigator.clipboard.writeText($('#pitch').value); t.textContent = 'Copied'; }
   else if (t.id === 'saveNotes') { await api('/api/creators/notes', {id:openId, notes:$('#notes').value}); t.textContent = 'Saved'; state.creators.find(c => c.id === openId).notes = $('#notes').value; }
-  else if (t.id === 'saveSources') { await api('/api/creators/sources', {id:openId, website:$('#srcSite').value, yt_handle:$('#srcYt').value}); scanError = ''; await load(); }
+  else if (t.id === 'saveSources') { await api('/api/creators/sources', {id:openId, website:$('#srcSite').value, yt_handle:$('#srcYt').value, instagram:$('#srcIg').value, threads:$('#srcTh').value}); scanError = ''; await load(); }
   else if (t.id === 'removeCreator') { if (confirm('Stop tracking and delete their signals?')) { await api('/api/creators/delete', {id:openId}); closeDrawer(); load(); } }
   else if (t.id === 'scanBtn') { scanError = ''; await api('/api/scan', {}); runScan(); }
   else if (t.id === 'addBtn') { $('#aName').value = $('#aAlias').value = $('#aYt').value = $('#aSite').value = ''; $('#addDlg').showModal(); }
