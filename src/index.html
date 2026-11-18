@@ -99,7 +99,8 @@ dialog h2{margin:0 0 4px;font:600 19px Georgia,serif}
   <h2>Track a creator</h2>
   <label>Name (as headlines print it)</label><input id="aName" required>
   <label>Also known as — show or channel names, comma-separated</label><input id="aAlias" placeholder="e.g. Pod Save America">
-  <label>YouTube handle (optional)</label><input id="aYt" placeholder="@handle">
+  <label>YouTube handle (optional) — their videos' transcripts and descriptions are read</label><input id="aYt" placeholder="@handle">
+  <label>Their own website (optional) — read for ticket links, pre-orders and contacts</label><input id="aSite" placeholder="example.com">
   <div class="dlg-acts"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="ok">Add</button></div>
 </form></dialog>
 
@@ -208,7 +209,7 @@ async function runScan() {
       const r = await api('/api/scan/step', {});
       if (r.error) { scanError = r.error; break; }
       if (r.done) break;
-      progress = r.message + (r.left ? ` · ${r.left} of ${r.total} creators left` : '');
+      progress = r.message + (r.left ? ` · about ${r.left} step${r.left === 1 ? '' : 's'} left` : '');
       if (i % 6 === 5) state = await api('/api/state');
       await new Promise(r => setTimeout(r, 500)); // pace requests so news sources don't rate-limit the scan
       render();
@@ -324,10 +325,15 @@ function drawer(id) {
       <div><h2>${esc(c.name)}</h2>${c.stage ? `<span class="stagepill" style="background:${COLORS[c.stage]}">${esc(state.stages[c.stage])}</span> <span class="note">${esc(c.window)}</span>` : '<span class="note">No live promo signal</span>'}</div>
       <button id="closeDrawer">Close</button></div>
     <h4>What to do now</h4><ol class="play">${PLAY[c.stage].map(p => `<li>${esc(p)}</li>`).join('')}</ol>
-    <h4>Find the right contact</h4><div class="links">${links.map(([l, q, u]) => `<a class="btn" target="_blank" rel="noopener" href="${esc(u || g(q))}">${esc(l)}</a>`).join('')}</div>
+    <h4>Find the right contact</h4>${(c.contacts || []).length ? `<div class="note" style="margin-bottom:6px">Found on their website:</div>${c.contacts.map(k => `<div class="row" style="padding:7px 10px"><div class="t"><a href="${esc(/^(https?:|mailto:)/i.test(k.href) ? k.href : '#')}" target="_blank" rel="noopener">${esc(k.value)}</a><div class="sub">${esc(k.label)}</div></div></div>`).join('')}` : ''}
+    <div class="links">${links.map(([l, q, u]) => `<a class="btn" target="_blank" rel="noopener" href="${esc(u || g(q))}">${esc(l)}</a>`).join('')}</div>
     <h4>Signals (${c.signals.length})</h4>${[...c.signals].sort((a, b) => a.rejected - b.rejected).map(sig).join('') || '<div class="empty">None found in the last year.</div>'}
     <h4>Pitch draft</h4><textarea id="pitch">${esc(pitch(c))}</textarea>
     <div style="margin-top:8px"><button id="copyPitch">Copy pitch</button></div>
+    <h4>Where to watch them</h4>
+    <label>Their own website</label><input id="srcSite" value="${esc(c.website || '')}" placeholder="example.com">
+    <label>YouTube handle</label><input id="srcYt" value="${esc(c.yt_handle || '')}" placeholder="@handle">
+    <div style="margin-top:8px"><button id="saveSources">Save and rescan them</button></div>
     <h4>Notes — contacts, replies, follow-up dates</h4><textarea id="notes" style="min-height:90px">${esc(c.notes)}</textarea>
     <div style="margin-top:8px;display:flex;justify-content:space-between"><button id="saveNotes">Save notes</button><button id="removeCreator">Stop tracking</button></div>`;
   $('#drawer').classList.add('open');
@@ -338,14 +344,15 @@ document.addEventListener('click', async e => {
   const t = e.target, o = t.closest('[data-open]');
   if (t.dataset.tab) { tab = t.dataset.tab; render(); }
   else if (t.dataset.sig) { await api('/api/signals', {id:+t.dataset.sig, status:t.dataset.status}); load(); }
-  else if (t.dataset.track !== undefined) { $('#aName').value = t.dataset.track; $('#aAlias').value = ''; $('#aYt').value = ''; $('#addDlg').showModal(); }
+  else if (t.dataset.track !== undefined) { $('#aName').value = t.dataset.track; $('#aAlias').value = ''; $('#aYt').value = ''; $('#aSite').value = ''; $('#addDlg').showModal(); }
   else if (o) drawer(+o.dataset.open);
   else if (t.id === 'closeDrawer') closeDrawer();
   else if (t.id === 'copyPitch') { await navigator.clipboard.writeText($('#pitch').value); t.textContent = 'Copied'; }
   else if (t.id === 'saveNotes') { await api('/api/creators/notes', {id:openId, notes:$('#notes').value}); t.textContent = 'Saved'; state.creators.find(c => c.id === openId).notes = $('#notes').value; }
+  else if (t.id === 'saveSources') { await api('/api/creators/sources', {id:openId, website:$('#srcSite').value, yt_handle:$('#srcYt').value}); scanError = ''; await load(); }
   else if (t.id === 'removeCreator') { if (confirm('Stop tracking and delete their signals?')) { await api('/api/creators/delete', {id:openId}); closeDrawer(); load(); } }
   else if (t.id === 'scanBtn') { scanError = ''; await api('/api/scan', {}); runScan(); }
-  else if (t.id === 'addBtn') { $('#aName').value = $('#aAlias').value = $('#aYt').value = ''; $('#addDlg').showModal(); }
+  else if (t.id === 'addBtn') { $('#aName').value = $('#aAlias').value = $('#aYt').value = $('#aSite').value = ''; $('#addDlg').showModal(); }
   else if (t.id === 'lookBtn') { $('#lSite').value = state.settings.site || ''; $('#lMsg').textContent = ''; renderLook(); $('#lookDlg').showModal(); }
   else if (t.id === 'lClose') $('#lookDlg').close();
   else if (t.id === 'lMatch' || t.id === 'lReset') {
@@ -365,7 +372,7 @@ document.addEventListener('click', async e => {
 // Dialog forms: act on the form's own submit, which fires reliably, rather than the dialog's close event.
 $('#addDlg form').addEventListener('submit', async e => {
   if (!e.submitter || e.submitter.value !== 'ok') return;
-  await api('/api/creators', {name:$('#aName').value, aliases:$('#aAlias').value, yt_handle:$('#aYt').value});
+  await api('/api/creators', {name:$('#aName').value, aliases:$('#aAlias').value, yt_handle:$('#aYt').value, website:$('#aSite').value});
   scanError = ''; await load();
 });
 $('#setDlg form').addEventListener('submit', async e => {

@@ -1,6 +1,17 @@
 # Tour Radar
 
-An early-warning monitor for venues that book political and civic creators. It watches news, book catalogs and creators' own YouTube channels for signs that someone is heading into a promo cycle — a book deal, a documentary, a campaign, a tour — and tells you when and how to pitch them.
+An early-warning monitor for venues that book political and civic creators. It watches what creators say and publish themselves for signs that they are heading into a promo cycle — a book deal, a documentary, a campaign, a tour — and tells you when and how to pitch them.
+
+## What it reads
+
+| Source | What it looks for |
+|---|---|
+| YouTube transcripts | Passages in a creator's recent videos where they talk about their book, tour, tickets or an announcement |
+| YouTube titles and descriptions | Announcement titles, and pre-order or ticket links in the description |
+| The creator's own website | Ticket and bookseller links, announcement headings, their feed, and booking or press contacts |
+| Press-release wires | PR Newswire and PRWeb releases naming a tracked creator, plus leads on people you don't track yet |
+| Book catalog and trade press | Open Library listings and Publishers Weekly |
+| Google News | Press coverage. Google refuses requests from Cloudflare, so this only runs when the app is run elsewhere, such as on your own computer |
 
 Each tracked creator sits in one of five stages, earliest first: **Whisper → Deal announced → Dated / pre-order → Tour announced → On the road**. Open a creator to see the source headlines, what to do at that stage, contact-finder searches and a pitch email drafted from your venue's details.
 
@@ -40,7 +51,7 @@ Set up my own copy of Tour Radar from https://github.com/Brittybrit/tour-radar.
 |---|---|---|
 | `RADAR_PASSWORD` | Yes | The shared sign-in password. Until it is set, the site shows a locked setup page. |
 | `ANTHROPIC_API_KEY` | No | Turns on the AI check: Claude reads each new headline and rejects ones that are about someone else. Billed to your own Anthropic account by usage. |
-| `RADAR_MODEL` | No | Model for the AI check. Defaults to `claude-opus-5-5`; `claude-haiku-5-5` is far cheaper. |
+| `RADAR_MODEL` | No | Model for the AI check. Defaults to `claude-haiku-5-5`, which costs pennies per scan; `claude-opus-5-5` is more careful and costs more. |
 
 To change one later: Cloudflare dashboard → your Worker → **Settings → Variables and Secrets**.
 
@@ -65,18 +76,20 @@ npx wrangler secret put RADAR_PASSWORD
 ## First steps once it is running
 
 1. Open **Club details** and enter the venue's name, city and capacity. Pitch drafts use these, and headlines mentioning your city get flagged.
-2. Edit the watchlist: **+ Track a creator** to add, or open a creator and choose **Stop tracking**.
+2. Edit the watchlist: **+ Track a creator** to add, or open a creator and choose **Stop tracking**. Give each creator a YouTube handle and website so there is something to read.
 3. Open **Appearance**, enter the club's website and press **Match colors** to restyle the dashboard in the club's own colors, in a light or dark version.
 4. Press **Scan now**. Check **Needs your eyes** for headlines the scanner was unsure about, and the **Discovery** tab for people not yet on your list.
 
 ## How scanning works
 
-A scan checks one creator at a time, because Cloudflare's free plan allows only a little work per request. While the dashboard is open, the page drives the scan and shows progress. When it is closed, a trigger runs every 5 minutes: it starts a fresh scan once the last one is 12 hours old and does one step each time, so a background scan of 30 creators takes about three hours.
+A scan checks one creator at a time, because Cloudflare's free plan allows only a little work per request. While the dashboard is open, the page drives the scan and shows progress. When it is closed, a trigger runs every 2 minutes: it starts a fresh scan once the last one is 12 hours old and does one step each time. A step is one creator, one website or one video transcript, so a background scan of 30 creators takes a few hours.
 
 ## Limits
 
-- Matching is by keyword on headlines, so some signals are wrong. Dismiss them, or turn on the AI check.
-- News sources sometimes rate-limit scans ("source errors" in the header). Those creators are retried on the next scan.
+- Matching is by keyword, so some signals are wrong, and transcript passages in particular need a second look. Dismiss them, or turn on the AI check, which reads each one.
+- Transcripts come from an unofficial YouTube route that could stop working. Only each creator's three newest videos from the last three weeks are read.
+- Press wires only list their latest releases, so they catch announcements as they happen, not past ones.
+- Some websites refuse automated visits; those show as source errors in the header.
 - The earliest signals (agency signings, deal announcements) depend on trade press picking them up. Paid deal trackers such as Publishers Marketplace are not connected.
 - It does not read actual tour routing, so it cannot tell you a tour passes near your city.
 
