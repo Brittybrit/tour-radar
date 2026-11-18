@@ -131,7 +131,28 @@ async function api(path, body) {
   if (r.status === 401) { location.reload(); return new Promise(() => {}); }
   return r.json();
 }
-async function load() { state = await api('/api/state'); render(); if (state.scan.running) setTimeout(load, 1500); }
+let scanning = false, progress = '', scanError = '';
+async function load() { state = await api('/api/state'); render(); if (state.scan.running && !scanning && !scanError) runScan(); }
+// A scan is many small steps; the page asks for them one at a time. If the page closes, the server finishes on its own schedule.
+async function runScan() {
+  if (scanning) return;
+  scanning = true; scanError = ''; progress = 'Starting';
+  render();
+  try {
+    for (let i = 0; i < 400; i++) {
+      const r = await api('/api/scan/step', {});
+      if (r.error) { scanError = r.error; break; }
+      if (r.done) break;
+      progress = r.message + (r.left ? ` · ${r.left} of ${r.total} creators left` : '');
+      if (i % 6 === 5) state = await api('/api/state');
+      await new Promise(r => setTimeout(r, 500)); // pace requests so news sources don't rate-limit the scan
+      render();
+    }
+  } catch (e) { scanError = String(e.message || e); }
+  scanning = false;
+  state = await api('/api/state');
+  render();
+}
 
 function ago(iso) {
   const d = Math.round((Date.now() - new Date(iso)) / 864e5);
@@ -140,9 +161,11 @@ function ago(iso) {
 
 function render() {
   const sc = state.scan, ls = state.last_scan;
-  $('#scanBtn').disabled = sc.running;
-  $('#scanBtn').textContent = sc.running ? `Scanning ${sc.done}/${sc.total}…` : 'Scan now';
-  $('#meta').textContent = sc.running ? 'Checking ' + (sc.message || '…')
+  $('#scanBtn').disabled = scanning;
+  $('#scanBtn').textContent = scanning ? 'Scanning…' : 'Scan now';
+  $('#meta').textContent = scanning ? progress
+    : scanError ? 'Scan paused: ' + scanError + ' — press Scan now to continue.'
+    : sc.running ? 'A scan is finishing in the background.'
     : ls ? `${state.creators.length} creators tracked · last scan ${ago(ls.finished)} · ${ls.new} new signal${ls.new === 1 ? '' : 's'}${ls.errors && ls.errors.length ? ' · ' + ls.errors.length + ' source error(s)' : ''}${ls.ai ? ' · AI check ' + ls.ai : ''}`
     : 'No scan yet — press Scan now.';
   $('#meta').title = ls && ls.errors ? ls.errors.join('\n') : '';
@@ -255,17 +278,18 @@ document.addEventListener('click', async e => {
   else if (t.id === 'copyPitch') { await navigator.clipboard.writeText($('#pitch').value); t.textContent = 'Copied'; }
   else if (t.id === 'saveNotes') { await api('/api/creators/notes', {id:openId, notes:$('#notes').value}); t.textContent = 'Saved'; state.creators.find(c => c.id === openId).notes = $('#notes').value; }
   else if (t.id === 'removeCreator') { if (confirm('Stop tracking and delete their signals?')) { await api('/api/creators/delete', {id:openId}); closeDrawer(); load(); } }
-  else if (t.id === 'scanBtn') { await api('/api/scan', {}); setTimeout(load, 400); }
+  else if (t.id === 'scanBtn') { scanError = ''; await api('/api/scan', {}); runScan(); }
   else if (t.id === 'addBtn') { $('#aName').value = $('#aAlias').value = $('#aYt').value = ''; $('#addDlg').showModal(); }
   else if (t.id === 'setBtn') { const s = state.settings; $('#sClub').value = s.club || ''; $('#sCity').value = s.city || ''; $('#sCap').value = s.capacity || ''; $('#sFormat').value = s.format || ''; $('#sContact').value = s.contact || ''; $('#sEmail').value = s.email || ''; $('#setDlg').showModal(); }
 });
-$('#addDlg').addEventListener('close', async e => {
-  if (e.target.returnValue !== 'ok') return;
+// Dialog forms: act on the form's own submit, which fires reliably, rather than the dialog's close event.
+$('#addDlg form').addEventListener('submit', async e => {
+  if (!e.submitter || e.submitter.value !== 'ok') return;
   await api('/api/creators', {name:$('#aName').value, aliases:$('#aAlias').value, yt_handle:$('#aYt').value});
-  await load(); $('#meta').textContent += ' · added — press Scan now to check them';
+  scanError = ''; await load();
 });
-$('#setDlg').addEventListener('close', async e => {
-  if (e.target.returnValue !== 'ok') return;
+$('#setDlg form').addEventListener('submit', async e => {
+  if (!e.submitter || e.submitter.value !== 'ok') return;
   await api('/api/settings', {club:$('#sClub').value, city:$('#sCity').value, capacity:$('#sCap').value, format:$('#sFormat').value, contact:$('#sContact').value, email:$('#sEmail').value});
   load();
 });

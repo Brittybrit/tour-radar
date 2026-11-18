@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tour-radar",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-11-01",
+  // Lets the Worker import the dashboard page as text.
+  "rules": [{ "type": "Text", "globs": ["**/*.html"], "fallthrough": true }],
+  // The database is created for you on first deploy.
+  "d1_databases": [{ "binding": "DB", "database_name": "tour-radar" }],
+  // Every 5 minutes: start a rescan if the last one is over 12 hours old, and do one step of any unfinished scan.
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "vars": { "RADAR_MODEL": "claude-opus-5-5" },
+  "observability": { "enabled": true }
+}
