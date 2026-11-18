@@ -9,7 +9,7 @@ An early-warning monitor for venues that book political and civic creators. It w
 | YouTube transcripts | Passages in a creator's recent videos where they talk about their book, tour, tickets or an announcement |
 | YouTube titles and descriptions | Announcement titles, and pre-order or ticket links in the description |
 | The creator's own website | Ticket and bookseller links, announcement headings, their feed, and booking or press contacts |
-| Press-release wires | PR Newswire and PRWeb releases naming a tracked creator, plus leads on people you don't track yet |
+| Press-release wires | PR Newswire's dated archive (books back about a year, music and tours about nine months), an archive search for each tracked creator, and the newest releases on every scan; plus PRWeb's daily feed |
 | Book catalog and trade press | Open Library listings and Publishers Weekly |
 | Google News | Press coverage. Google refuses requests from Cloudflare, so this only runs when the app is run elsewhere, such as on your own computer |
 
@@ -88,7 +88,7 @@ A scan checks one creator at a time, because Cloudflare's free plan allows only 
 
 - Matching is by keyword, so some signals are wrong, and transcript passages in particular need a second look. Dismiss them, or turn on the AI check, which reads each one.
 - Transcripts come from an unofficial YouTube route that could stop working. Only each creator's three newest videos from the last three weeks are read.
-- Press wires only list their latest releases, so they catch announcements as they happen, not past ones.
+- Press wires are read back through PR Newswire's archive once, then kept current. Few political creators are announced on wires, so expect this source to be quiet most of the time.
 - Some websites refuse automated visits; those show as source errors in the header.
 - The earliest signals (agency signings, deal announcements) depend on trade press picking them up. Paid deal trackers such as Publishers Marketplace are not connected.
 - It does not read actual tour routing, so it cannot tell you a tour passes near your city.

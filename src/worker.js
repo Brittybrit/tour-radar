@@ -28,7 +28,7 @@ const PATTERNS = [
   [5, "release", 5, R`\b(best-?sell\w+|book launch|launch(es|ed) (his|her|their) (book|memoir))\b`],
   [3, "dated", 9, R`\b(pre-?orders?|cover reveal|release date|publication date|pub date|hits? (shelves|bookstores)|premiere date|official trailer|(coming|arrives|due|out|publishes|releases?|premieres?) (in|on|this|next) (${MONTHS}|${SEASON}|20\d\d|week|month))\b`],
   [3, "release", 5, R`\b(new|latest) (${PROJECT})\b`],
-  [2, "deal", 9, R`\b(book deal|(lands?|inks?|signs?|scores?|gets?) (a |an |major |new )*((book|publishing|overall|first-look|development|multi-book|netflix|hbo) )*deal|acquire[sd]|(to|will) publish|forthcoming|upcoming (${PROJECT})|debut (${PROJECT})|announc\w+ (a |an |new |his |her |their |debut |first )*(${PROJECT})|sold (his|her|their) (${PROJECT})|greenlit|picked up by|to (write|author|release|host|star in))\b`],
+  [2, "deal", 9, R`\b(book deal|(lands?|inks?|signs?|scores?|gets?) (a |an |major |new )*((book|publishing|overall|first-look|development|multi-book|netflix|hbo) )*deal|acquire[sd]|(to|will) publish|forthcoming|upcoming (${PROJECT})|debut (${PROJECT})|announc\w+ (a |an |new |his |her |their |debut |first )*(${PROJECT})|sold (his|her|their) (${PROJECT})|greenlit|picked up by|to (write|author|release|star in))\b`],
   [2, "campaign", 7, R`\b(running for|launch\w* (a |his |her |their )?(campaign|bid)|announc\w+ (a |his |her |their )?(run|bid|campaign|candidacy))\b`],
   [1, "whisper", 6, R`\b((writing|working on|developing) (a |an |his |her |their |new )*(${PROJECT})|book proposal|signs? with (uta|caa|wme|icm|gersh|paradigm|[a-z& ]{0,30}(agency|management|entertainment))|literary agent|in talks|shopping (a |his |her |their )?(${PROJECT})|teas(es|ing)|hints? at|(exploring|considering|mulling|weighing) (a )?(run|bid))\b`],
 ].map(([stage, kind, weight, rx]) => ({ stage, kind, weight, rx: new RegExp(rx, "i") }));
@@ -45,12 +45,23 @@ const DISCOVERY_FEEDS = [
   '"signs with" (UTA OR CAA OR WME) (podcaster OR YouTuber OR streamer OR commentator) politics',
   "feed:Publishers Weekly|https://www.publishersweekly.com/pw/feeds/recent/index.xml",
   // Press-release wires: publishers, promoters and publicists announce here before the press picks it up.
-  "feed:PR Newswire|https://www.prnewswire.com/rss/entertainment-media-latest-news/books-list.rss",
-  "feed:PR Newswire|https://www.prnewswire.com/rss/entertainment-media-latest-news/publishing-information-services-list.rss",
-  "feed:PR Newswire|https://www.prnewswire.com/rss/entertainment-media-latest-news/entertainment-media-latest-news-list.rss",
   "feed:PRWeb|https://www.prweb.com/rss2/daily.xml",
 ];
 const BLOCKED = /HTTP (403|429|503)/;
+
+// PR Newswire keeps a dated archive, so past announcements can be found, not just today's.
+// Books reach back about a year and music (where tours are announced) about nine months; search reaches about six months.
+const PRN = "https://www.prnewswire.com";
+const PRN_SECTION = (name, page) => `${PRN}/news-releases/entertainment-media-latest-news/${name}-list/?page=${page}&pagesize=100`;
+const PRN_SEARCH = (q) => `${PRN}/search/news/?keyword=${encodeURIComponent(q)}&pagesize=100&page=1`;
+const WIRE_EVERY_SCAN = [ // the newest page of each section, then phrase searches; one search per creator follows these
+  PRN_SECTION("books", 1), PRN_SECTION("music", 1), PRN_SECTION("publishing-information-services", 1),
+  PRN_SEARCH('"book tour"'), PRN_SEARCH('"live tour" announces'), PRN_SEARCH('podcast "tour dates"'),
+  PRN_SEARCH('"book deal"'), PRN_SEARCH('memoir "to be published"'), PRN_SEARCH('"signs with" podcast'),
+];
+const WIRE_BACKFILL = [ // older pages, read once ever, one per step
+  ...Array.from({ length: 18 }, (_, i) => ["books", i + 2]), ...Array.from({ length: 19 }, (_, i) => ["music", i + 2]),
+];
 
 // Links that are themselves evidence: a ticketing page means dates exist, a bookseller page means a book does.
 const TICKET_HOSTS = /(^|\.)(ticketmaster\.com|livenation\.com|eventbrite\.[a-z.]+|axs\.com|dice\.fm|seated\.com|tixr\.com|etix\.com|seetickets\.[a-z.]+|bandsintown\.com|songkick\.com|ticketweb\.[a-z.]+|universe\.com|showclix\.com|humanitix\.com|lu\.ma|tickettailor\.com)$/i;
@@ -481,6 +492,42 @@ async function discoveryTask(feeds, nameIndex) {
   return { sigs, errs };
 }
 
+// One PR Newswire archive or search page: releases naming a tracked creator become that creator's signals,
+// and book or tour announcements by anyone else become discovery leads. `only` limits it to one creator's search.
+function wireCards(page) {
+  const out = [];
+  const add = (date, href, title, snippet) => {
+    const d = new Date(date.replace(/,?\s*\d{1,2}:\d{2}\s*ET\s*$/, "") + " 12:00 UTC");
+    out.push({ title: plain(title), snippet: plain(snippet), url: PRN + href, published_at: isNaN(d) ? nowIso() : d.toISOString() });
+  };
+  for (const m of page.matchAll(/<a class="newsreleaseconsolidatelink[^"]*" href="([^"]+)"[^>]*>\s*<h3[^>]*>\s*<small>([^<]*)<\/small>([\s\S]*?)<\/h3>\s*<p[^>]*>([\s\S]*?)<\/p>/g)) add(m[2], m[1], m[3], m[4]);
+  for (const m of page.matchAll(/<small>([^<]*)<\/small>\s*<a class="news-release" href="([^"]+)"[^>]*>([\s\S]*?)<\/a>\s*<\/h3>\s*<p>([\s\S]*?)<\/p>/g)) add(m[1], m[2], m[3], m[4]);
+  return out;
+}
+
+async function wireTask(url, nameIndex, only) {
+  const cards = wireCards(await fetchCapped(url, 500000));
+  const sigs = [];
+  for (const c of cards) {
+    const lowTitle = c.title.toLowerCase(), lowSnip = c.snippet.toLowerCase();
+    const hit = nameIndex.find(([n, id]) => (!only || id === only) && (lowTitle.includes(n) || lowSnip.includes(n)));
+    if (hit) {
+      const inTitle = lowTitle.includes(hit[0]);
+      const s = classify(c.title) || classify(c.snippet);
+      if (!s) continue;
+      sigs.push({ ...s, cid: hit[1], url: c.url, published_at: c.published_at, outlet: "PR Newswire", source: "wire",
+        title: inTitle ? c.title : `${c.title} — “${c.snippet.slice(0, 180)}”`,
+        confidence: inTitle ? attribute(lowTitle, nameIndex.filter((x) => x[1] === hit[1]).map((x) => x[0]), s) || "low" : "low" });
+    } else if (!only && DISCOVERY_FILTER.test(lowTitle)) {
+      const s = classify(c.title);
+      if (s) sigs.push({ ...s, cid: 0, title: c.title, url: c.url, published_at: c.published_at, outlet: "PR Newswire", source: "discovery", confidence: "low" });
+    }
+  }
+  return { sigs, cards: cards.length };
+}
+const loadNameIndex = async (env) => (await env.DB.prepare("SELECT id, name, aliases FROM creators ORDER BY id").all()).results
+  .flatMap((r) => [r.name, ...parseList(r.aliases)].map((n) => [n.toLowerCase(), r.id]));
+
 const insertSignal = (env, cid, s, t) => env.DB.prepare(`INSERT OR IGNORE INTO signals(creator_id,source,kind,stage,weight,confidence,title,url,outlet,matched,published_at,found_at)
   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).bind(cid, s.source, s.kind, s.stage, s.weight, s.confidence, s.title.slice(0, 400), s.url, s.outlet || "", s.matched, s.published_at, t);
 
@@ -582,7 +629,7 @@ const PENDING = "(checked_at IS NULL OR checked_at < COALESCE((SELECT value FROM
 async function startScan(env) {
   const row = await env.DB.prepare("SELECT value FROM settings WHERE key='scan_count'").first();
   await env.DB.batch([
-    setting(env, "scan_started", nowIso()), setting(env, "scan_new", 0), setting(env, "scan_errors", "[]"), setting(env, "disc_idx", 0),
+    setting(env, "scan_started", nowIso()), setting(env, "scan_new", 0), setting(env, "scan_errors", "[]"), setting(env, "disc_idx", 0), setting(env, "wire_idx", 0),
     setting(env, "ai_status", ""), setting(env, "ai_checked", 0), setting(env, "ai_stopped", ""), setting(env, "scan_has_prev", +(row?.value || 0) > 0 ? 1 : 0),
   ]);
 }
@@ -597,7 +644,7 @@ async function step(env) {
     env.DB.prepare(`SELECT * FROM creators WHERE ${SITE_PENDING} ORDER BY site_checked_at IS NOT NULL, site_checked_at LIMIT 1`),
     env.DB.prepare("SELECT v.*, c.name FROM videos v JOIN creators c ON c.id = v.creator_id WHERE v.checked_at IS NULL ORDER BY v.published_at DESC LIMIT 1"),
     env.DB.prepare(`SELECT (SELECT COUNT(*) FROM creators WHERE ${PENDING}) AS pending, (SELECT COUNT(*) FROM creators WHERE ${SITE_PENDING}) AS sites,
-      (SELECT COUNT(*) FROM videos WHERE checked_at IS NULL) AS videos,
+      (SELECT COUNT(*) FROM videos WHERE checked_at IS NULL) AS videos, (SELECT COUNT(*) FROM creators) AS total,
       (SELECT COUNT(*) FROM signals WHERE ai IS NULL AND creator_id > 0 AND status != 'dismissed') AS ai_left`),
   ]);
   const S = Object.fromEntries(setRes.results.map((r) => [r.key, r.value]));
@@ -605,8 +652,9 @@ async function step(env) {
     await startScan(env);
     return step(env);
   }
-  const { pending, sites, videos, ai_left } = countRes.results[0];
-  const left = pending + sites + videos;
+  const { pending, sites, videos, total, ai_left } = countRes.results[0];
+  const wireIdx = +(S.wire_idx || 0), wireTotal = WIRE_EVERY_SCAN.length + total, backIdx = +(S.wire_backfill || 0);
+  const left = pending + sites + videos + Math.max(0, wireTotal - wireIdx) + Math.max(0, WIRE_BACKFILL.length - backIdx);
   const t = nowIso();
   const errors = parseList(S.scan_errors);
   const googleBlocked = S.news_blocked === S.scan_started;
@@ -645,11 +693,42 @@ async function step(env) {
     return { done: false, message: `Read a ${video.name} video transcript`, left: left - 1 };
   }
 
+  // Press wire, this scan: newest pages and phrase searches, then one archive search per creator.
+  if (wireIdx < wireTotal) {
+    const nameIndex = await loadNameIndex(env);
+    let url = WIRE_EVERY_SCAN[wireIdx], only = 0, label = "Checked the press wire";
+    if (!url) {
+      const ids = [...new Set(nameIndex.map((x) => x[1]))];
+      only = ids[wireIdx - WIRE_EVERY_SCAN.length];
+      const name = only && nameIndex.find((x) => x[1] === only)[0];
+      if (name) { url = PRN_SEARCH(`"${name}"`); label = "Searched the press wire archive for a creator"; }
+    }
+    let out = { sigs: [] }, errs = [];
+    if (url) { try { out = await wireTask(url, nameIndex, only); } catch (e) { errs = [`wire: ${e?.message || e}`]; } }
+    const inserts = out.sigs.map((s) => insertSignal(env, s.cid, s, t));
+    const res = await env.DB.batch([...inserts, setting(env, "wire_idx", wireIdx + 1)]);
+    await env.DB.batch(bookkeeping(out.sigs.reduce((a, s2, i) => a + (s2.cid ? res[i]?.meta?.changes || 0 : 0), 0), errs));
+    return { done: false, message: label, left: left - 1 };
+  }
+
+  // Press wire, one time only: walk back through the dated archive.
+  if (backIdx < WIRE_BACKFILL.length) {
+    const [section, page] = WIRE_BACKFILL[backIdx];
+    let out = { sigs: [], cards: 1 }, errs = [];
+    try { out = await wireTask(PRN_SECTION(section, page), await loadNameIndex(env), 0); } catch (e) { errs = [`wire: ${e?.message || e}`]; }
+    // An empty page means that section's archive has ended: jump to the next section.
+    let next = backIdx + 1;
+    if (!out.cards) while (next < WIRE_BACKFILL.length && WIRE_BACKFILL[next][0] === section) next++;
+    const inserts = out.sigs.map((s) => insertSignal(env, s.cid, s, t));
+    const res = await env.DB.batch([...inserts, setting(env, "wire_backfill", next)]);
+    await env.DB.batch(bookkeeping(out.sigs.reduce((a, s2, i) => a + (s2.cid ? res[i]?.meta?.changes || 0 : 0), 0), errs));
+    return { done: false, message: `Reading the press wire archive (${section}, page ${page})`, left: left - 1 };
+  }
+
   const feeds = DISCOVERY_FEEDS.filter((f) => f.startsWith("feed:") || !googleBlocked);
   const idx = +(S.disc_idx || 0);
   if (idx < feeds.length) {
-    const rows = (await env.DB.prepare("SELECT id, name, aliases FROM creators").all()).results;
-    const nameIndex = rows.flatMap((r) => [r.name, ...parseList(r.aliases)].map((n) => [n.toLowerCase(), r.id]));
+    const nameIndex = await loadNameIndex(env);
     const out = await discoveryTask(feeds.slice(idx, idx + 2), nameIndex);
     const found = out.sigs.filter((s) => s.url);
     const inserts = found.map((s) => insertSignal(env, s.cid, s, t));
