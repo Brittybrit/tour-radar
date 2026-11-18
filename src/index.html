@@ -9,6 +9,17 @@
   --s1:#7a6fb0;--s2:#2f7f86;--s3:#b8860b;--s4:#c2571f;--s5:#a8324a;--ok:#2e7d4f}
 @media (prefers-color-scheme:dark){:root{--bg:#161513;--panel:#201f1c;--ink:#ece8df;--muted:#a09a8d;--line:#35332e;--accent:#e2733f;--accent-ink:#1a1206;--soft:#2a2824;
   --s1:#a69be0;--s2:#5fb9c0;--s3:#e0b040;--s4:#f08a50;--s5:#e06a82;--ok:#6cc08c}}
+/* A chosen mode overrides the device setting; a club's colors are then layered on top by applyTheme(). */
+:root[data-mode="light"]{--bg:#f6f4ef;--panel:#fff;--ink:#1c1b19;--muted:#6b675f;--line:#e2ded4;--accent:#b4451f;--accent-ink:#fff;--soft:#f0ece2;
+  --s1:#7a6fb0;--s2:#2f7f86;--s3:#b8860b;--s4:#c2571f;--s5:#a8324a;--ok:#2e7d4f}
+:root[data-mode="dark"]{--bg:#161513;--panel:#201f1c;--ink:#ece8df;--muted:#a09a8d;--line:#35332e;--accent:#e2733f;--accent-ink:#1a1206;--soft:#2a2824;
+  --s1:#a69be0;--s2:#5fb9c0;--s3:#e0b040;--s4:#f08a50;--s5:#e06a82;--ok:#6cc08c}
+.swatches{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;min-height:34px}
+.swatch{width:34px;height:34px;border-radius:50%;border:2px solid var(--line);cursor:pointer;padding:0}
+.swatch.on{outline:2px solid var(--ink);outline-offset:2px}
+.seg{display:flex;gap:0}.seg button{border-radius:0;flex:1}.seg button:first-child{border-radius:7px 0 0 7px}.seg button:last-child{border-radius:0 7px 7px 0}
+.seg button.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.inline{display:flex;gap:8px}.inline input{flex:1}.inline button{white-space:nowrap}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
 header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;padding:16px 20px;border-bottom:1px solid var(--line)}
@@ -73,6 +84,7 @@ dialog h2{margin:0 0 4px;font:600 19px Georgia,serif}
   <h1>Tour <span>Radar</span></h1>
   <div class="meta" id="meta">Loading…</div>
   <button id="addBtn">+ Track a creator</button>
+  <button id="lookBtn">Appearance</button>
   <button id="setBtn">Club details</button>
   <button class="primary" id="scanBtn">Scan now</button>
 </header>
@@ -103,6 +115,21 @@ dialog h2{margin:0 0 4px;font:600 19px Georgia,serif}
   <div class="dlg-acts"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="ok">Save</button></div>
 </form></dialog>
 
+<dialog id="lookDlg">
+  <h2>Appearance</h2>
+  <div class="note">Match Tour Radar to the club's own colors. It reads the colors from the club's website and builds a light and a dark version from them.</div>
+  <label>Club website</label>
+  <div class="inline"><input id="lSite" placeholder="yourclub.org"><button id="lMatch" class="primary">Match colors</button></div>
+  <div class="note" id="lMsg" style="margin-top:6px"></div>
+  <label>Colors found — pick the one to lead with</label>
+  <div class="swatches" id="lSwatches"></div>
+  <label>Or choose a color yourself</label>
+  <input type="color" id="lPick" style="width:64px;height:36px;padding:2px">
+  <label>Light or dark</label>
+  <div class="seg" id="lMode"><button data-mode="auto">Follow device</button><button data-mode="light">Light</button><button data-mode="dark">Dark</button></div>
+  <div class="dlg-acts"><button id="lReset">Default look</button><button id="lClose" class="primary">Done</button></div>
+</dialog>
+
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -125,6 +152,44 @@ const PLAY = {
 };
 
 let state = null, tab = 'pipeline', openId = null;
+
+// ---- club colors: one brand color in, a full light or dark palette out
+function toHsl(hex) {
+  const n = parseInt(hex.slice(1), 16), r = (n >> 16) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2, d = max - min;
+  if (!d) return [0, 0, l * 100];
+  const sat = d / (1 - Math.abs(2 * l - 1));
+  const h = max === r ? ((g - b) / d + 6) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [h * 60, sat * 100, l * 100];
+}
+function palette(hex, dark) {
+  const [h, s, l] = toHsl(hex), t = Math.min(s, 40) / 40; // how strongly to tint the neutrals
+  const c = (sat, lig) => `hsl(${Math.round(h)} ${Math.round(sat)}% ${Math.round(lig * 10) / 10}%)`;
+  return dark
+    ? {bg:c(22*t,8), panel:c(20*t,12), ink:c(18*t,91), muted:c(10*t,64), line:c(16*t,21), soft:c(18*t,15.5), accent:c(Math.min(s,85), Math.max(l,62)), 'accent-ink':c(40*t,10)}
+    : {bg:c(24*t+4,96), panel:'#fff', ink:c(30*t,11), muted:c(10*t,40), line:c(20*t+4,86), soft:c(24*t+4,91.5), accent:c(s, Math.min(l,44)), 'accent-ink':'#fff'};
+}
+const darkQuery = matchMedia('(prefers-color-scheme: dark)');
+function applyTheme(t) {
+  const mode = t.theme_mode || 'auto', dark = mode === 'dark' || (mode === 'auto' && darkQuery.matches), root = document.documentElement;
+  if (mode === 'auto') root.removeAttribute('data-mode'); else root.dataset.mode = mode;
+  const keys = ['bg', 'panel', 'ink', 'muted', 'line', 'soft', 'accent', 'accent-ink'];
+  const p = /^#[0-9a-f]{6}$/i.test(t.theme_accent || '') ? palette(t.theme_accent, dark) : null;
+  keys.forEach(k => p ? root.style.setProperty('--' + k, p[k]) : root.style.removeProperty('--' + k));
+  root.style.colorScheme = dark ? 'dark' : 'light';
+  try { localStorage.setItem('tr_theme', JSON.stringify({theme_accent: t.theme_accent || '', theme_mode: mode})); } catch {}
+}
+try { applyTheme(JSON.parse(localStorage.getItem('tr_theme') || '{}')); } catch {} // avoid a flash of the default look
+darkQuery.addEventListener('change', () => state && applyTheme(state.settings));
+
+function renderLook() {
+  const s = state.settings, mode = s.theme_mode || 'auto';
+  let sw = []; try { sw = JSON.parse(s.theme_swatches || '[]'); } catch {}
+  $('#lSwatches').innerHTML = sw.filter(c => /^#[0-9a-f]{6}$/i.test(c)).map(c => `<button class="swatch${c === s.theme_accent ? ' on' : ''}" data-accent="${c}" style="background:${c}" title="${c}" aria-label="Use ${c}"></button>`).join('')
+    || '<span class="empty">None yet — enter the website and press Match colors.</span>';
+  if (/^#[0-9a-f]{6}$/i.test(s.theme_accent || '')) $('#lPick').value = s.theme_accent;
+  document.querySelectorAll('#lMode button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+}
 
 async function api(path, body) {
   const r = await fetch(path, body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {});
@@ -160,6 +225,7 @@ function ago(iso) {
 }
 
 function render() {
+  applyTheme(state.settings);
   const sc = state.scan, ls = state.last_scan;
   $('#scanBtn').disabled = scanning;
   $('#scanBtn').textContent = scanning ? 'Scanning…' : 'Scan now';
@@ -280,6 +346,20 @@ document.addEventListener('click', async e => {
   else if (t.id === 'removeCreator') { if (confirm('Stop tracking and delete their signals?')) { await api('/api/creators/delete', {id:openId}); closeDrawer(); load(); } }
   else if (t.id === 'scanBtn') { scanError = ''; await api('/api/scan', {}); runScan(); }
   else if (t.id === 'addBtn') { $('#aName').value = $('#aAlias').value = $('#aYt').value = ''; $('#addDlg').showModal(); }
+  else if (t.id === 'lookBtn') { $('#lSite').value = state.settings.site || ''; $('#lMsg').textContent = ''; renderLook(); $('#lookDlg').showModal(); }
+  else if (t.id === 'lClose') $('#lookDlg').close();
+  else if (t.id === 'lMatch' || t.id === 'lReset') {
+    const url = t.id === 'lReset' ? '' : $('#lSite').value.trim();
+    if (t.id === 'lMatch' && !url) { $('#lMsg').textContent = 'Enter the club website first.'; return; }
+    $('#lMsg').textContent = url ? 'Reading the site…' : '';
+    const r = await api('/api/theme', {url});
+    if (r.error) { $('#lMsg').textContent = r.error; return; }
+    if (!url) $('#lSite').value = '';
+    $('#lMsg').textContent = url ? `Found ${r.swatches.length} color${r.swatches.length === 1 ? '' : 's'}.` : 'Back to the default look.';
+    await load(); renderLook();
+  }
+  else if (t.dataset.accent) { state.settings.theme_accent = t.dataset.accent; applyTheme(state.settings); renderLook(); await api('/api/settings', {theme_accent: t.dataset.accent}); }
+  else if (t.dataset.mode) { state.settings.theme_mode = t.dataset.mode; applyTheme(state.settings); renderLook(); await api('/api/settings', {theme_mode: t.dataset.mode}); }
   else if (t.id === 'setBtn') { const s = state.settings; $('#sClub').value = s.club || ''; $('#sCity').value = s.city || ''; $('#sCap').value = s.capacity || ''; $('#sFormat').value = s.format || ''; $('#sContact').value = s.contact || ''; $('#sEmail').value = s.email || ''; $('#setDlg').showModal(); }
 });
 // Dialog forms: act on the form's own submit, which fires reliably, rather than the dialog's close event.
@@ -292,6 +372,10 @@ $('#setDlg form').addEventListener('submit', async e => {
   if (!e.submitter || e.submitter.value !== 'ok') return;
   await api('/api/settings', {club:$('#sClub').value, city:$('#sCity').value, capacity:$('#sCap').value, format:$('#sFormat').value, contact:$('#sContact').value, email:$('#sEmail').value});
   load();
+});
+$('#lPick').addEventListener('change', async e => {
+  state.settings.theme_accent = e.target.value; applyTheme(state.settings); renderLook();
+  await api('/api/settings', {theme_accent: e.target.value});
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
 load();

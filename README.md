@@ -66,7 +66,8 @@ npx wrangler secret put RADAR_PASSWORD
 
 1. Open **Club details** and enter the venue's name, city and capacity. Pitch drafts use these, and headlines mentioning your city get flagged.
 2. Edit the watchlist: **+ Track a creator** to add, or open a creator and choose **Stop tracking**.
-3. Press **Scan now**. Check **Needs your eyes** for headlines the scanner was unsure about, and the **Discovery** tab for people not yet on your list.
+3. Open **Appearance**, enter the club's website and press **Match colors** to restyle the dashboard in the club's own colors, in a light or dark version.
+4. Press **Scan now**. Check **Needs your eyes** for headlines the scanner was unsure about, and the **Discovery** tab for people not yet on your list.
 
 ## How scanning works
 

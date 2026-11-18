@@ -281,6 +281,63 @@ async function discoveryTask(feeds, namesLower) {
 const insertSignal = (env, cid, s, t) => env.DB.prepare(`INSERT OR IGNORE INTO signals(creator_id,source,kind,stage,weight,confidence,title,url,outlet,matched,published_at,found_at)
   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).bind(cid, s.source, s.kind, s.stage, s.weight, s.confidence, s.title.slice(0, 400), s.url, s.outlet || "", s.matched, s.published_at, t);
 
+// ---------------------------------------------------------------- club colors
+const SETTING_KEYS = ["club", "city", "capacity", "contact", "email", "format", "site", "theme_accent", "theme_swatches", "theme_mode"];
+
+function toHsl(hex) {
+  const n = parseInt(hex.slice(1), 16), r = (n >> 16) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2, d = max - min;
+  if (!d) return [0, 0, l];
+  const s = d / (1 - Math.abs(2 * l - 1));
+  const h = max === r ? ((g - b) / d + 6) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [h * 60, s, l];
+}
+
+// Read a website's own colors: its declared theme color, named brand variables, then whatever its CSS uses most.
+async function extractTheme(raw) {
+  let u;
+  try { u = new URL(/^https?:\/\//i.test(raw) ? raw : "https://" + raw); } catch { throw new Error("That doesn't look like a web address."); }
+  const host = u.hostname.toLowerCase();
+  if (!/^https?:$/.test(u.protocol) || !host.includes(".") || /^[\d.]+$/.test(host) || host.includes(":") || host.endsWith(".local") || host.endsWith(".internal")) {
+    throw new Error("Enter the club's public website address.");
+  }
+  const page = (await fetchText(u.href)).slice(0, 200000);
+  const score = new Map();
+  const add = (c, w) => {
+    let h = c.toLowerCase();
+    if (h.length === 4) h = "#" + h[1] + h[1] + h[2] + h[2] + h[3] + h[3];
+    score.set(h, (score.get(h) || 0) + w);
+  };
+  const scan = (css) => {
+    for (const m of css.matchAll(/--[\w-]*(?:primary|brand|accent|theme|main)[\w-]*\s*:\s*(#[0-9a-f]{6}|#[0-9a-f]{3})\b/gi)) add(m[1], 30);
+    for (const m of css.matchAll(/background(?:-color)?\s*:\s*(#[0-9a-f]{6}|#[0-9a-f]{3})\b/gi)) add(m[1], 3);
+    for (const m of css.matchAll(/[:\s,(](#[0-9a-f]{6}|#[0-9a-f]{3})\b(?![0-9a-f])/gi)) add(m[1], 1);
+    for (const m of css.matchAll(/rgba?\(\s*(\d{1,3})[\s,]+(\d{1,3})[\s,]+(\d{1,3})/g)) {
+      const [r, g, b] = [m[1], m[2], m[3]].map(Number);
+      if (r < 256 && g < 256 && b < 256) add("#" + [r, g, b].map((x) => x.toString(16).padStart(2, "0")).join(""), 1);
+    }
+  };
+  const meta = page.match(/<meta[^>]+name=["']theme-color["'][^>]*content=["'](#[0-9a-f]{3,6})["']/i) || page.match(/<meta[^>]+content=["'](#[0-9a-f]{3,6})["'][^>]*name=["']theme-color["']/i);
+  if (meta && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(meta[1])) add(meta[1], 40);
+  scan(page);
+  const sheets = [...page.matchAll(/<link[^>]+rel=["']?stylesheet["']?[^>]*>/gi)].map((m) => (m[0].match(/href=["']([^"']+)["']/i) || [])[1]).filter(Boolean)
+    .map((h) => { try { return new URL(decodeEntities(h), u.href).href; } catch { return null; } })
+    .filter((h) => h && /^https?:/.test(h) && !/fonts\.googleapis|font-?awesome|bootstrap|cdnjs|jsdelivr|unpkg/i.test(h)).slice(0, 2);
+  const loaded = await Promise.allSettled(sheets.map((h) => fetchText(h)));
+  for (const r of loaded) if (r.status === "fulfilled") scan(r.value.slice(0, 200000));
+
+  // Brand colors are the saturated ones; whites, blacks and grays are just page furniture.
+  const ranked = [...score.entries()].map(([hex, w]) => ({ hex, w, hsl: toHsl(hex) }))
+    .filter((c) => c.hsl[1] >= 0.25 && c.hsl[2] >= 0.12 && c.hsl[2] <= 0.88).sort((a, b) => b.w - a.w);
+  const swatches = [];
+  for (const c of ranked) { // keep visibly different hues only
+    if (swatches.every((k) => Math.min(Math.abs(k.hsl[0] - c.hsl[0]), 360 - Math.abs(k.hsl[0] - c.hsl[0])) > 18 || Math.abs(k.hsl[2] - c.hsl[2]) > 0.25)) swatches.push(c);
+    if (swatches.length === 5) break;
+  }
+  if (!swatches.length) throw new Error("Couldn't find brand colors on that site. It may load its styles in a way this can't read.");
+  return { site: u.href, accent: swatches[0].hex, swatches: swatches.map((c) => c.hex) };
+}
+
 // ---------------------------------------------------------------- AI check
 async function aiBatch(env, rows) {
   const model = env.RADAR_MODEL || "claude-opus-5-5";
@@ -435,7 +492,7 @@ async function buildState(env) {
       new: sigs.filter((s) => s.is_new).length, local: sigs.some((s) => s.local), signals: sigs };
   }).sort((a, b) => b.heat - a.heat);
   const pending = cRes.results.filter((c) => c.pending).length;
-  const settings = Object.fromEntries(["club", "city", "capacity", "contact", "email", "format"].filter((k) => S[k] != null).map((k) => [k, S[k]]));
+  const settings = Object.fromEntries(SETTING_KEYS.filter((k) => S[k] != null).map((k) => [k, S[k]]));
   return {
     creators, discovery: (by.get(0) || []).slice(0, 60), settings, stages: STAGES,
     last_scan: S.scan_finished ? { finished: S.scan_finished, new: +(S.scan_new || 0), errors: parseList(S.scan_errors), ai: S.ai_status || "" } : null,
@@ -502,9 +559,22 @@ async function handle(request, env) {
       await db.prepare("UPDATE signals SET status=? WHERE id=?").bind(b.status, +b.id || -1).run();
       return json({ ok: true });
     case "/api/settings": {
-      const stmts = ["club", "city", "capacity", "contact", "email", "format"].filter((k) => k in b).map((k) => setting(env, k, String(b[k]).slice(0, 300)));
+      if ("theme_accent" in b && b.theme_accent && !/^#[0-9a-f]{6}$/i.test(b.theme_accent)) return json({ error: "bad color" }, 400);
+      if ("theme_mode" in b && !["auto", "light", "dark"].includes(b.theme_mode)) return json({ error: "bad mode" }, 400);
+      const stmts = SETTING_KEYS.filter((k) => k in b && k !== "theme_swatches").map((k) => setting(env, k, String(b[k]).slice(0, 300)));
       if (stmts.length) await db.batch(stmts);
       return json({ ok: true });
+    }
+    case "/api/theme": {
+      // Read the club site's colors and adopt them; an empty address goes back to the default look.
+      if (!String(b.url || "").trim()) {
+        await db.batch([setting(env, "site", ""), setting(env, "theme_accent", ""), setting(env, "theme_swatches", "[]")]);
+        return json({ ok: true, accent: "", swatches: [] });
+      }
+      let theme;
+      try { theme = await extractTheme(String(b.url).trim().slice(0, 300)); } catch (e) { return json({ error: String(e?.message || e) }, 422); }
+      await db.batch([setting(env, "site", theme.site), setting(env, "theme_accent", theme.accent), setting(env, "theme_swatches", JSON.stringify(theme.swatches))]);
+      return json({ ok: true, ...theme });
     }
   }
   return json({ error: "not found" }, 404);
